@@ -1,12 +1,13 @@
 //! By convention, root.zig is the root source file when making a library.
 //! Having the public stuff of the module.
-const cyclone = @import("cyclone/cyclone.zig");
+const core = @import("cyclone/core.zig");
+const particle = @import("cyclone/particle.zig");
 
-pub const Vector3 = cyclone.Vector3;
-pub const Particle = cyclone.Particle;
-pub const ParticleSystem = cyclone.ParticleSystem;
+pub const Vector3 = core.Vector3;
+pub const Particle = particle.Particle;
+pub const ParticleSystem = particle.ParticleSystem;
 
 test {
-    _ = @import("cyclone/core.zig");
-    _ = @import("cyclone/particle.zig");
+    _ = core;
+    _ = particle;
 }
