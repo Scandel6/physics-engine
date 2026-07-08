@@ -61,5 +61,6 @@
         "src",
         "demos",
         "README.md",
+        "LICENSE",
     },
 }
