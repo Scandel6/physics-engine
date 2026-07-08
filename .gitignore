@@ -1,7 +1,10 @@
 .zig-cache/
+zig-pkg/
 zig-out/
 build/
 build-*/
 docgen_tmp/
 
 *.env
+
+personal-docs/
