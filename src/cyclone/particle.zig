@@ -46,7 +46,14 @@ pub fn Particle(comptime T: type) type {
 /// Create default particles (all 0, damping 1).
 fn makeParticle(comptime T: type) Particle(T) {
     const Vec3 = core.Vector3(T);
-    return .{ .position = Vec3.zero(), .velocity = Vec3.zero(), .acceleration = Vec3.zero(), .forceAccum = Vec3.zero(), .damping = 1, .inverseMass = 0 };
+    return .{
+        .position = Vec3.zero(),
+        .velocity = Vec3.zero(),
+        .acceleration = Vec3.zero(),
+        .forceAccum = Vec3.zero(),
+        .damping = 1,
+        .inverseMass = 0,
+    };
 }
 
 /// This system will handle and process all particles.
