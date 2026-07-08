@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the fisicas web demo and open it in a browser.
+"""Serve the physics-engine web demo and open it in a browser.
 
 Usage:
     python3 serve_web.py [port]

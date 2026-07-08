@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // ENGINE
     // ========================================================================
-    const physics_mod = b.addModule("fisicas", .{
+    const physics_mod = b.addModule("physics-engine", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
 
     // ========================================================================
     // NATIVE DEMO
-    // Command: zig build demo-native -Doptimize=ReleaseFast
+    // Command: zig build demo-native [-Doptimize=ReleaseFast] --summary all
     // ========================================================================
     const native_step = b.step("demo-native", "Compile and run demos in Desktop");
 
@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Linking dependencies
-    ballistic_exe.root_module.addImport("fisicas", physics_mod);
+    ballistic_exe.root_module.addImport("physics-engine", physics_mod);
     ballistic_exe.root_module.linkLibrary(raylib_lib_native);
     ballistic_exe.root_module.link_libc = true;
 
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
 
     // ========================================================================
     // WEB DEMO
-    // Command: zig build demo-web
+    // Command: zig build demo-web [-Doptimize=ReleaseSmall] --summary all
     // ========================================================================
     const web_step = b.step("demo-web", "Compile demos for web");
 
@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
 
-    lib_web.root_module.addImport("fisicas", physics_mod_web);
+    lib_web.root_module.addImport("physics-engine", physics_mod_web);
     lib_web.root_module.linkLibrary(raylib_lib_web);
     lib_web.root_module.link_libc = true;
 

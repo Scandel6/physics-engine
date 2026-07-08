@@ -1,4 +1,4 @@
-# fisicas
+# physics-engine
 
 A physics engine port of [cyclone-physics](https://github.com/idmillington/cyclone-physics)
 to Zig, developed with a Data-Oriented design. The engine is pure (no rendering
