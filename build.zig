@@ -28,6 +28,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("engine-test", "Run engine tests");
     test_step.dependOn(&run_mod_tests.step);
 
+    // ========================================================================
+    // DEMO TESTS
+    // Command: zig build demo-test --summary all
+    // Tests the demo logic with the engine module only.
+    // ========================================================================
+    const demo_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("demos/ballistic/ballistic_system.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    demo_test.root_module.addImport("physics-engine", physics_mod);
+
+    const run_demo_tests = b.addRunArtifact(demo_test);
+    const demo_test_step = b.step("demo-test", "Run demo tests (no raylib)");
+    demo_test_step.dependOn(&run_demo_tests.step);
+
     // TODO: Check best way to compile in batches for multiple demos
 
     // ========================================================================
