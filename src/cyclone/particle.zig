@@ -1,7 +1,9 @@
 const std = @import("std");
-const print = std.debug.print;
 const testing = std.testing;
 const math = std.math;
+const mem = std.mem;
+
+const Allocator = mem.Allocator;
 
 const core = @import("core.zig");
 
@@ -44,7 +46,7 @@ pub fn Particle(comptime T: type) type {
 }
 
 /// Create default particles (all 0, damping 1).
-fn makeParticle(comptime T: type) Particle(T) {
+pub fn defaultParticle(comptime T: type) Particle(T) {
     const Vec3 = core.Vector3(T);
     return .{
         .position = Vec3.zero(),
@@ -77,9 +79,27 @@ pub fn ParticleSystem(comptime T: type) type {
             self.data.deinit(self.allocator);
         }
 
+        test "init/deinit" {
+            var system = ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+        }
+
         /// Add a particle.
         pub fn addParticle(self: *@This(), p: ParticleType) !void {
             try self.data.append(self.allocator, p);
+        }
+
+        test "addParticle" {
+            var system = ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+
+            const p = defaultParticle(T);
+            try system.addParticle(p);
+            try testing.expectEqual(@as(usize, 1), system.data.len);
+
+            try system.addParticle(p);
+            try system.addParticle(p);
+            try testing.expectEqual(@as(usize, 3), system.data.len);
         }
 
         /// Integrates the particle batch forward in time by the given amount.
@@ -90,56 +110,41 @@ pub fn ParticleSystem(comptime T: type) type {
             std.debug.assert(duration > 0.0);
 
             // Extract slices of every property
-            // const positions = self.data.items(.position);
-            // const velocities = self.data.items(.velocity);
-            // ...
-
             const slice = self.data.slice();
+
+            const positions = slice.items(.position);
+            const velocities = slice.items(.velocity);
+            const accelerations = slice.items(.acceleration);
+            const forceAccums = slice.items(.forceAccum);
+            const inverseMasses = slice.items(.inverseMass);
+            const dampings = slice.items(.damping);
 
             // Iterate through every data
             for (0..self.data.len) |i| {
 
                 // Update linear position
-                slice.items(.position)[i].addScaledVector(slice.items(.velocity)[i], duration);
+                positions[i].addScaledVector(velocities[i], duration);
 
                 // Work out acceleration from the force
-                var resultAcc = slice.items(.acceleration)[i];
-                resultAcc.addScaledVector(slice.items(.forceAccum)[i], slice.items(.inverseMass)[i]);
+                var resultAcc = accelerations[i];
+                resultAcc.addScaledVector(forceAccums[i], inverseMasses[i]);
 
                 // Update linear velocity from acceleration
-                slice.items(.velocity)[i].addScaledVector(resultAcc, duration);
+                velocities[i].addScaledVector(resultAcc, duration);
 
                 // Impose drag
-                slice.items(.velocity)[i].mulEq(math.pow(T, slice.items(.damping)[i], duration));
+                velocities[i].mulEq(math.pow(T, dampings[i], duration));
 
                 // Zero next frame accumulated force
-                slice.items(.forceAccum)[i] = Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+                forceAccums[i] = Vec3.zero();
             }
-        }
-
-        test "init/deinit" {
-            var system = ParticleSystem(T).init(testing.allocator);
-            defer system.deinit();
-        }
-
-        test "addParticle" {
-            var system = ParticleSystem(T).init(testing.allocator);
-            defer system.deinit();
-
-            const p = makeParticle(T);
-            try system.addParticle(p);
-            try testing.expectEqual(@as(usize, 1), system.data.len);
-
-            try system.addParticle(p);
-            try system.addParticle(p);
-            try testing.expectEqual(@as(usize, 3), system.data.len);
         }
 
         test "integrateAll - full pipeline" {
             var system = ParticleSystem(T).init(testing.allocator);
             defer system.deinit();
 
-            var p = makeParticle(T);
+            var p = defaultParticle(T);
 
             // Particle 1
             p.acceleration = Vec3.init(0, -10, 0);
@@ -151,14 +156,14 @@ pub fn ParticleSystem(comptime T: type) type {
             try system.addParticle(p);
 
             // Particle 2 - infinite mass
-            p = makeParticle(T);
+            p = defaultParticle(T);
             p.acceleration = Vec3.init(0, -10, 0);
             p.forceAccum = Vec3.init(100, 200, 300);
             p.damping = 0.5;
             try system.addParticle(p);
 
             // Particle 3
-            p = makeParticle(T);
+            p = defaultParticle(T);
             p.velocity = Vec3.init(2, 3, 4);
             p.forceAccum = Vec3.init(1, 2, 3);
             try system.addParticle(p);
@@ -181,6 +186,17 @@ pub fn ParticleSystem(comptime T: type) type {
             defer system.deinit();
 
             try system.integrateAll(0.5);
+        }
+
+        pub fn ensureTotalCapacity(self: *@This(), new_capacity: usize) Allocator.Error!void {
+            try self.data.ensureTotalCapacity(self.allocator, new_capacity);
+        }
+
+        test "ensure total capacity" {
+            var system = ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            try system.ensureTotalCapacity(20);
+            try system.ensureTotalCapacity(0);
         }
     };
 }

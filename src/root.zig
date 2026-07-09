@@ -7,6 +7,8 @@ pub const Vector3 = core.Vector3;
 pub const Particle = particle.Particle;
 pub const ParticleSystem = particle.ParticleSystem;
 
+pub const defaultParticle = particle.defaultParticle;
+
 test {
     _ = core;
     _ = particle;

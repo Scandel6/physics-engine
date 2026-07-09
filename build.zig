@@ -15,14 +15,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Engine tests
+    // ========================================================================
+    // ENGINE TESTS
+    // Command: zig build engine-test --summary all
+    // ========================================================================
     const mod_tests = b.addTest(.{
         .root_module = physics_mod,
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    const test_step = b.step("test", "Run tests");
+    const test_step = b.step("engine-test", "Run engine tests");
     test_step.dependOn(&run_mod_tests.step);
 
     // TODO: Check best way to compile in batches for multiple demos
@@ -44,7 +47,7 @@ pub fn build(b: *std.Build) void {
     const ballistic_exe = b.addExecutable(.{
         .name = "ballistic_desktop",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("demos/ballistic.zig"),
+            .root_source_file = b.path("demos/ballistic/ballistic.zig"),
             .target = target,
             .optimize = optimize,
         }),
