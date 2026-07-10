@@ -7,7 +7,7 @@ const ParticleSystem = cyclone.ParticleSystem(f32);
 const Particle = cyclone.Particle(f32);
 const defaultParticle = cyclone.defaultParticle;
 
-const ShotType = enum(u8) {
+pub const ShotType = enum(u8) {
     UNUSED = 0,
     PISTOL = 1,
     ARTILLERY = 2,
@@ -21,7 +21,7 @@ const AmmoRound = struct {
 };
 
 pub const AmmoRoundSystem = struct {
-    const CAPACITY: usize = 16;
+    pub const CAPACITY: usize = 16;
     particles: ParticleSystem,
     ammoRound: std.MultiArrayList(AmmoRound),
     count: usize = 0,
@@ -120,6 +120,32 @@ pub const AmmoRoundSystem = struct {
         system.fire(ShotType.FIREBALL, 2);
         system.fire(ShotType.LASER, 3);
         system.fire(ShotType.PISTOL, 4);
+    }
+
+    /// Updates physics and culls expired/out-of-bounds rounds.
+    /// dt: frame duration in seconds. now: current timestamp in ms.
+    pub fn update(self: *@This(), dt: f32, now: u32) !void {
+        if (dt <= 0) return;
+
+        // Integrate all particles once (handles all CAPACITY slots,
+        // including UNUSED - must change in the future).
+        try self.particles.integrateAll(dt);
+
+        // Cull: mark UNUSED any round that hit ground, expired, or flew past z=200.
+        const ammo_slice = self.ammoRound.slice();
+        const shotTypes = ammo_slice.items(.shotType);
+        const startTimes = ammo_slice.items(.startTime);
+
+        const positions = self.particles.data.slice().items(.position);
+
+        for (0..CAPACITY) |i| {
+            if (shotTypes[i] == ShotType.UNUSED) continue;
+
+            if (positions[i].y < 0 or now - startTimes[i] > 5000 or positions[i].z > 200) {
+                shotTypes[i] = ShotType.UNUSED;
+                self.count -= 1;
+            }
+        }
     }
 };
 

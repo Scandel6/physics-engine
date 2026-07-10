@@ -1,11 +1,12 @@
 const std = @import("std");
 const cyclone = @import("physics-engine");
-const Vec3 = cyclone.Vector3(f32);
 const assert = std.debug.assert;
 
-const rl = @cImport({
+pub const rl = @cImport({
     @cInclude("raylib.h");
 });
+
+const Vec3 = cyclone.Vector3(f32);
 
 comptime {
     assert(@sizeOf(Vec3) == @sizeOf(rl.Vector3));
@@ -14,6 +15,6 @@ comptime {
     assert(@offsetOf(Vec3, "z") == @offsetOf(rl.Vector3, "z"));
 }
 
-fn toRl(v: Vec3) rl.Vector3 {
+pub fn toRl(v: Vec3) rl.Vector3 {
     return .{ .x = v.x, .y = v.y, .z = v.z };
 }

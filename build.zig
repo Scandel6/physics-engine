@@ -54,13 +54,24 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     const native_step = b.step("demo-native", "Compile and run demos in Desktop");
 
-    // Building Raylib
+    // RENDER NATIVE
+
+    const render_native_mod = b.addModule("render", .{
+        .root_source_file = b.path("demos/render.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const raylib_dep_native = b.dependency("raylib", .{
         .target = target,
         .optimize = optimize,
     });
 
     const raylib_lib_native = raylib_dep_native.artifact("raylib");
+
+    render_native_mod.linkLibrary(raylib_lib_native);
+    render_native_mod.link_libc = true;
+    render_native_mod.addImport("physics-engine", physics_mod);
 
     const ballistic_exe = b.addExecutable(.{
         .name = "ballistic_desktop",
@@ -73,8 +84,7 @@ pub fn build(b: *std.Build) void {
 
     // Linking dependencies
     ballistic_exe.root_module.addImport("physics-engine", physics_mod);
-    ballistic_exe.root_module.linkLibrary(raylib_lib_native);
-    ballistic_exe.root_module.link_libc = true;
+    ballistic_exe.root_module.addImport("render", render_native_mod);
 
     // Installing and configuring the command for it to be executed immediately
     const install_native = b.addInstallArtifact(ballistic_exe, .{});
@@ -100,6 +110,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Render web
+    const render_web_mod = b.addModule("render", .{
+        .root_source_file = b.path("demos/render.zig"),
+        .target = web_target,
+        .optimize = optimize,
+    });
+    render_web_mod.addImport("physics-engine", physics_mod_web);
+
     // Building Raylib again, but with web target
     // The internal build.zig of Raylib will detect the .os_tag and will activate PLATFORM_WEB
     const raylib_dep_web = b.dependency("raylib", .{
@@ -109,11 +127,14 @@ pub fn build(b: *std.Build) void {
 
     const raylib_lib_web = raylib_dep_web.artifact("raylib");
 
+    render_web_mod.linkLibrary(raylib_lib_web);
+    render_web_mod.link_libc = true;
+
     // Link static library
     const lib_web = b.addLibrary(.{
         .name = "ballistic_web",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("demos/ballistic.zig"),
+            .root_source_file = b.path("demos/ballistic/ballistic.zig"),
             .target = web_target,
             .optimize = optimize,
         }),
@@ -121,8 +142,7 @@ pub fn build(b: *std.Build) void {
     });
 
     lib_web.root_module.addImport("physics-engine", physics_mod_web);
-    lib_web.root_module.linkLibrary(raylib_lib_web);
-    lib_web.root_module.link_libc = true;
+    lib_web.root_module.addImport("render", render_web_mod);
 
     // This activates the donwload emsdk through raylib, calls emcc
     // with raylib + lib and creates html, js and wasm
