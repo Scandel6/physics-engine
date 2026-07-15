@@ -198,6 +198,33 @@ pub fn ParticleSystem(comptime T: type) type {
             try system.ensureTotalCapacity(20);
             try system.ensureTotalCapacity(0);
         }
+
+        /// Adds the given force to the particle in the given index.
+        pub fn addForce(self: *@This(), index: usize, force: Vec3) void {
+            self.data.items(.forceAccum)[index].addEq(force);
+        }
+
+        test "addForce" {
+            var system = ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+
+            var p = defaultParticle(T);
+
+            p.acceleration = Vec3.init(0, -10, 0);
+            p.velocity = Vec3.init(1, 0, 0);
+            p.inverseMass = 0.5;
+            p.damping = 0.9;
+
+            try system.addParticle(p);
+
+            const force = Vec3{ .x = 2, .y = 3, .z = 5 };
+
+            system.addForce(0, force);
+
+            try testing.expect(system.data.items(.forceAccum)[0].eq(force));
+            try system.integrateAll(0.5);
+            try testing.expect(system.data.items(.forceAccum)[0].isZero());
+        }
     };
 }
 
