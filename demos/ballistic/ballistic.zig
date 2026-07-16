@@ -2,7 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ballistic = @import("ballistic_system.zig");
 const render = @import("render");
+const cyclone = @import("physics-engine");
 const rl = render.rl;
+
+const v3 = cyclone.core.vec3(f32);
 
 extern fn emscripten_set_main_loop(
     func: *const fn () callconv(.c) void,
@@ -60,10 +63,12 @@ fn updateDrawFrame() callconv(.c) void {
     // Rounds activos
     const ammo_slice = system.ammoRound.slice();
     const shot_types = ammo_slice.items(.shotType);
-    const positions = system.particles.data.slice().items(.position);
+    const positions_x = system.particles.data.slice().items(.position_x);
+    const positions_y = system.particles.data.slice().items(.position_y);
+    const positions_z = system.particles.data.slice().items(.position_z);
     for (0..ballistic.AmmoRoundSystem.CAPACITY) |j| {
         if (shot_types[j] == .UNUSED) continue;
-        rl.DrawSphere(render.toRl(positions[j]), 0.3, rl.BLACK);
+        rl.DrawSphere(render.toRl(v3.init(positions_x[j], positions_y[j], positions_z[j])), 0.3, rl.BLACK);
     }
     rl.EndMode3D();
 

@@ -2,10 +2,13 @@ const std = @import("std");
 const cyclone = @import("physics-engine");
 const testing = std.testing;
 
-const Vec3 = cyclone.Vector3(f32);
-const ParticleSystem = cyclone.ParticleSystem(f32);
-const Particle = cyclone.Particle(f32);
-const defaultParticle = cyclone.defaultParticle;
+const FLOAT = f32;
+
+const Vec3 = cyclone.core.Vector3(FLOAT);
+const v3 = cyclone.core.vec3(FLOAT);
+const ParticleSystem = cyclone.particle.ParticleSystem(FLOAT);
+const Particle = cyclone.particle.Particle(FLOAT);
+const defaultParticle = cyclone.particle.defaultParticle;
 
 pub const ShotType = enum(u8) {
     UNUSED = 0,
@@ -21,7 +24,7 @@ const AmmoRound = struct {
 };
 
 pub const AmmoRoundSystem = struct {
-    pub const CAPACITY: usize = 16;
+    pub const CAPACITY: usize = 2000000;
     particles: ParticleSystem,
     ammoRound: std.MultiArrayList(AmmoRound),
     count: usize = 0,
@@ -38,7 +41,7 @@ pub const AmmoRoundSystem = struct {
             const i = ammo.addOneAssumeCapacity();
             ammo.items(.shotType)[i] = ShotType.UNUSED;
             ammo.items(.startTime)[i] = 0;
-            try particles.addParticle(defaultParticle(f32));
+            try particles.addParticle(defaultParticle(FLOAT));
         }
 
         return .{
@@ -78,37 +81,37 @@ pub const AmmoRoundSystem = struct {
     }
 
     fn setParticle(self: *@This(), index: usize, shot: ShotType) void {
-        var particle = defaultParticle(f32);
+        var particle = defaultParticle(FLOAT);
         switch (shot) {
             .PISTOL => {
-                particle.inverseMass = 0.5; // mass = 2kg
-                particle.velocity = Vec3{ .x = 0, .y = 0, .z = 35 };
-                particle.acceleration = Vec3{ .x = 0, .y = -1, .z = 0 };
+                particle.inverse_mass = 0.5; // mass = 2kg
+                particle.setVelocity(v3.init(0, 0, 35));
+                particle.setAcceleration(v3.init(0, -1, 0));
                 particle.damping = 0.99;
             },
             .ARTILLERY => {
-                particle.inverseMass = 0.005; // mass = 200kg
-                particle.velocity = Vec3{ .x = 0, .y = 30, .z = 40 };
-                particle.acceleration = Vec3{ .x = 0, .y = -20, .z = 0 };
+                particle.inverse_mass = 0.005; // mass = 200kg
+                particle.setVelocity(v3.init(0, 30, 40));
+                particle.setAcceleration(v3.init(0, -20, 0));
                 particle.damping = 0.99;
             },
             .FIREBALL => {
-                particle.inverseMass = 1; // mass = 1kg
-                particle.velocity = Vec3{ .x = 0, .y = 0, .z = 10 };
-                particle.acceleration = Vec3{ .x = 0, .y = 0.6, .z = 0 };
+                particle.inverse_mass = 1; // mass = 1kg
+                particle.setVelocity(v3.init(0, 0, 10));
+                particle.setAcceleration(v3.init(0, 0.6, 0));
                 particle.damping = 0.9;
             },
             .LASER => {
-                particle.inverseMass = 10; // mass = 0.1kg
-                particle.velocity = Vec3{ .x = 0, .y = 0, .z = 100 };
-                particle.acceleration = Vec3{ .x = 0, .y = 0, .z = 0 };
+                particle.inverse_mass = 10; // mass = 0.1kg
+                particle.setVelocity(v3.init(0, 0, 100));
+                particle.setAcceleration(v3.init(0, 0, 0));
                 particle.damping = 0.99;
             },
             .UNUSED => unreachable,
         }
 
-        particle.position = Vec3{ .x = 0, .y = 1.5, .z = 0 };
-        particle.forceAccum = Vec3.zero();
+        particle.setPosition(v3.init(0, 1.5, 0));
+        particle.setForceAccum(v3.zero());
 
         self.particles.data.set(index, particle);
     }
@@ -124,24 +127,26 @@ pub const AmmoRoundSystem = struct {
 
     /// Updates physics and culls expired/out-of-bounds rounds.
     /// dt: frame duration in seconds. now: current timestamp in ms.
-    pub fn update(self: *@This(), dt: f32, now: u32) !void {
+    pub fn update(self: *@This(), dt: FLOAT, now: u32) !void {
         if (dt <= 0) return;
 
         // Integrate all particles once (handles all CAPACITY slots,
         // including UNUSED - must change in the future).
         try self.particles.integrateAll(dt);
+        defer self.particles.clearForceAccums();
 
         // Cull: mark UNUSED any round that hit ground, expired, or flew past z=200.
         const ammo_slice = self.ammoRound.slice();
         const shotTypes = ammo_slice.items(.shotType);
         const startTimes = ammo_slice.items(.startTime);
 
-        const positions = self.particles.data.slice().items(.position);
+        const positions_y = self.particles.data.slice().items(.position_y);
+        const positions_z = self.particles.data.slice().items(.position_z);
 
         for (0..CAPACITY) |i| {
             if (shotTypes[i] == ShotType.UNUSED) continue;
 
-            if (positions[i].y < 0 or now - startTimes[i] > 5000 or positions[i].z > 200) {
+            if (positions_y[i] < 0 or now - startTimes[i] > 5000 or positions_z[i] > 200) {
                 shotTypes[i] = ShotType.UNUSED;
                 self.count -= 1;
             }
