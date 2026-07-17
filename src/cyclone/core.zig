@@ -160,6 +160,7 @@ pub fn vec3(comptime T: type) type {
     };
 }
 
+/// Namespace for all Vectorized operations
 pub fn batch(comptime T: type) type {
     return struct {
         const REG_BITS: usize = blk: {

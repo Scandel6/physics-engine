@@ -1,167 +1,325 @@
 const std = @import("std");
 const raylib = @import("raylib");
+const builtin = @import("builtin");
+
+const Demo = struct {
+    name: []const u8,
+    source: []const u8,
+    test_source: ?[]const u8,
+};
+
+const demos = [_]Demo{
+    .{
+        .name = "ballistic",
+        .source = "demos/ballistic/ballistic.zig",
+        .test_source = "demos/ballistic/ballistic_system.zig",
+    },
+};
+
+const Target = enum {
+    native,
+    web,
+};
+
+const Float = enum {
+    f32,
+    f64,
+};
+
+// Result example: const DemoName = enum(u8) { ballistic = 0 };
+const DemoName = blk: {
+    var names: [demos.len][]const u8 = undefined;
+    var values: [demos.len]u8 = undefined;
+    for (demos, 0..) |d, i| {
+        names[i] = d.name;
+        values[i] = i;
+    }
+    break :blk @Enum(u8, .exhaustive, &names, &values);
+};
+
+// Result example: const ModuleName = enum(u8) { @"physics-engine" = 0, ballistic = 1 };
+const ModuleName = blk: {
+    var count: usize = 1;
+    for (demos) |d| {
+        if (d.test_source != null) count += 1;
+    }
+
+    var names: [count][]const u8 = undefined;
+    var values: [count]u8 = undefined;
+    names[0] = "physics-engine";
+    values[0] = 0;
+    var idx: usize = 1;
+    for (demos) |d| {
+        if (d.test_source != null) {
+            names[idx] = d.name;
+            values[idx] = @intCast(idx);
+            idx += 1;
+        }
+    }
+    break :blk @Enum(u8, .exhaustive, &names, &values);
+};
+
+// Helpers
+fn addPhysicsMod(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    return b.addModule(name, .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
+const RenderArtifacts = struct {
+    mod: *std.Build.Module,
+    raylib_lib: *std.Build.Step.Compile,
+};
+
+fn addRenderMod(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    physics_mod: *std.Build.Module,
+) RenderArtifacts {
+    const render_mod = b.addModule(name, .{
+        .root_source_file = b.path("demos/render.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const raylib_dep = b.dependency("raylib", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const raylib_lib = raylib_dep.artifact("raylib");
+    render_mod.linkLibrary(raylib_lib);
+    render_mod.link_libc = true;
+    render_mod.addImport("physics-engine", physics_mod);
+    return .{ .mod = render_mod, .raylib_lib = raylib_lib };
+}
+
+fn addDemoExe(
+    b: *std.Build,
+    demo: Demo,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    physics_mod: *std.Build.Module,
+    render_mod: *std.Build.Module,
+    options_mod: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const demo_exe = b.addExecutable(.{
+        .name = b.fmt("{s}_desktop", .{demo.name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(demo.source),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    demo_exe.root_module.addImport("physics-engine", physics_mod);
+    demo_exe.root_module.addImport("render", render_mod);
+    demo_exe.root_module.addImport("build-options", options_mod);
+    return demo_exe;
+}
+
+fn addDemoWebLib(
+    b: *std.Build,
+    demo: Demo,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    physics_mod: *std.Build.Module,
+    render_mod: *std.Build.Module,
+    options_mod: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const lib = b.addLibrary(.{
+        .name = b.fmt("{s}_web", .{demo.name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(demo.source),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+    lib.root_module.addImport("physics-engine", physics_mod);
+    lib.root_module.addImport("render", render_mod);
+    lib.root_module.addImport("build-options", options_mod);
+    return lib;
+}
+
+fn addEmccStep(
+    b: *std.Build,
+    raylib_lib: *std.Build.Step.Compile,
+    lib: *std.Build.Step.Compile,
+    optimize: std.builtin.OptimizeMode,
+    install_dir: std.Build.InstallDir,
+) *std.Build.Step {
+    const emcc_flags = raylib.emsdk.emccDefaultFlags(b.allocator, .{ .optimize = optimize, .asyncify = false });
+    const emcc_settings = raylib.emsdk.emccDefaultSettings(b.allocator, .{ .optimize = optimize });
+    return raylib.emsdk.emccStep(b, raylib_lib, lib, .{
+        .optimize = optimize,
+        .flags = emcc_flags,
+        .settings = emcc_settings,
+        .shell_file_path = b.path("demos/web/shell.html"),
+        .install_dir = install_dir,
+    });
+}
 
 pub fn build(b: *std.Build) void {
     // Default target and optimization
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // ========================================================================
-    // ENGINE
-    // ========================================================================
-    const physics_mod = b.addModule("physics-engine", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const demo_opt = b.option(DemoName, "demo", "Which demo to build (default: all)");
+    const target_opt = b.option(Target, "build-target", "Which target (default: native and web)");
+    const float_opt = b.option(Float, "float", "Float precision (default: f32)") orelse .f32;
+    const perf_opt = b.option(bool, "perf", "ReleaseFast + LLVM + native CPU") orelse false;
+    const module_opt = b.option(ModuleName, "module", "Module to test (required for 'test' step)");
+
+    const eff_optimize: std.builtin.OptimizeMode = if (perf_opt) .ReleaseFast else optimize;
+
+    if (perf_opt and target_opt != null and target_opt.? == .web) {
+        std.debug.print("Error: -Dperf implies native target, cannot use -Dtarget=web\n", .{});
+        return;
+    }
+
+    // Build-options (-Dfloat)
+    const options_step = b.addOptions();
+    options_step.addOption(Float, "float", float_opt);
+    const options_mod = options_step.createModule();
+
+    // Physics module base (native/host para demos nativos y tests)
+    const native_target = if (perf_opt)
+        b.resolveTargetQuery(.{
+            .cpu_arch = builtin.cpu.arch,
+            .cpu_model = .native,
+        })
+    else
+        target;
+
+    const physics_mod = addPhysicsMod(b, "physics-engine", native_target, eff_optimize);
 
     // ========================================================================
-    // ENGINE TESTS
-    // Command: zig build engine-test --summary all
+    // INSTALL (default: zig build) — demos filtrados por -Ddemo / -Dtarget / -Dperf
     // ========================================================================
-    const mod_tests = b.addTest(.{
+
+    // Native demos
+    if (target_opt == null or target_opt.? == .native) {
+        const render_native = addRenderMod(b, "render", native_target, eff_optimize, physics_mod);
+
+        for (demos) |demo| {
+            if (demo_opt) |want| {
+                if (!std.mem.eql(u8, demo.name, @tagName(want)))
+                    continue;
+            }
+
+            const exe = addDemoExe(
+                b,
+                demo,
+                native_target,
+                eff_optimize,
+                physics_mod,
+                render_native.mod,
+                options_mod,
+            );
+            if (perf_opt) {
+                exe.use_llvm = true;
+                exe.use_lld = true;
+            }
+
+            const install_exe = b.addInstallArtifact(exe, .{
+                .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/bin", .{demo.name}) } },
+            });
+
+            b.getInstallStep().dependOn(&install_exe.step);
+        }
+    }
+
+    // Web demos
+    if ((target_opt == null or target_opt.? == .web) and !perf_opt) {
+        const web_target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .emscripten,
+        });
+
+        const physics_mod_web = addPhysicsMod(b, "physics-engine", web_target, optimize);
+        const render_mod_web = addRenderMod(b, "render", web_target, optimize, physics_mod_web);
+
+        for (demos) |demo| {
+            if (demo_opt) |want| {
+                if (!std.mem.eql(u8, demo.name, @tagName(want)))
+                    continue;
+            }
+
+            const web_lib = addDemoWebLib(
+                b,
+                demo,
+                web_target,
+                optimize,
+                physics_mod_web,
+                render_mod_web.mod,
+                options_mod,
+            );
+
+            const emcc = addEmccStep(
+                b,
+                render_mod_web.raylib_lib,
+                web_lib,
+                optimize,
+                .{ .custom = b.fmt("{s}/web", .{demo.name}) },
+            );
+            b.getInstallStep().dependOn(emcc);
+        }
+    }
+
+    // ========================================================================
+    // STEP: test  (zig build test [-Dmodule=...])
+    // ========================================================================
+    const test_step = b.step("test", "Run tests");
+
+    const engine_test = b.addTest(.{
+        .name = "physics-engine",
         .root_module = physics_mod,
     });
+    test_step.dependOn(&b.addRunArtifact(engine_test).step);
 
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const test_step = b.step("engine-test", "Run engine tests");
-    test_step.dependOn(&run_mod_tests.step);
-
-    // ========================================================================
-    // DEMO TESTS
-    // Command: zig build demo-test --summary all
-    // Tests the demo logic with the engine module only.
-    // ========================================================================
-    const demo_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("demos/ballistic/ballistic_system.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    demo_test.root_module.addImport("physics-engine", physics_mod);
-
-    const run_demo_tests = b.addRunArtifact(demo_test);
-    const demo_test_step = b.step("demo-test", "Run demo tests (no raylib)");
-    demo_test_step.dependOn(&run_demo_tests.step);
-
-    // TODO: Check best way to compile in batches for multiple demos
+    for (demos) |demo| {
+        if (module_opt) |want| {
+            if (!std.mem.eql(u8, demo.name, @tagName(want)))
+                continue;
+        }
+        if (demo.test_source) |test_src| {
+            const demo_test_mod = b.createModule(.{
+                .root_source_file = b.path(test_src),
+                .target = target,
+                .optimize = optimize,
+            });
+            demo_test_mod.addImport("physics-engine", physics_mod);
+            demo_test_mod.addImport("build-options", options_mod);
+            const demo_test = b.addTest(.{
+                .name = demo.name,
+                .root_module = demo_test_mod,
+            });
+            test_step.dependOn(&b.addRunArtifact(demo_test).step);
+        }
+    }
 
     // ========================================================================
-    // NATIVE DEMO
-    // Command: zig build demo-native [-Doptimize=ReleaseFast] --summary all
+    // STEP: perf  (zig build perf) — engine tests con AVX2
     // ========================================================================
-    const native_step = b.step("demo-native", "Compile and run demos in Desktop");
-
-    // RENDER NATIVE
-
-    const render_native_mod = b.addModule("render", .{
-        .root_source_file = b.path("demos/render.zig"),
-        .target = target,
-        .optimize = optimize,
+    const perf_step = b.step("perf", "Engine tests with ReleaseFast + LLVM + native CPU");
+    const perf_target = b.resolveTargetQuery(.{
+        .cpu_arch = builtin.cpu.arch,
+        .cpu_model = .native,
     });
-
-    const raylib_dep_native = b.dependency("raylib", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const raylib_lib_native = raylib_dep_native.artifact("raylib");
-
-    render_native_mod.linkLibrary(raylib_lib_native);
-    render_native_mod.link_libc = true;
-    render_native_mod.addImport("physics-engine", physics_mod);
-
-    const ballistic_exe = b.addExecutable(.{
-        .name = "ballistic_desktop",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("demos/ballistic/ballistic.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-
-    // Linking dependencies
-    ballistic_exe.root_module.addImport("physics-engine", physics_mod);
-    ballistic_exe.root_module.addImport("render", render_native_mod);
-
-    // Installing and configuring the command for it to be executed immediately
-    const install_native = b.addInstallArtifact(ballistic_exe, .{});
-    const run_native = b.addRunArtifact(ballistic_exe);
-    run_native.step.dependOn(&install_native.step);
-    native_step.dependOn(&run_native.step);
-
-    // ========================================================================
-    // WEB DEMO
-    // Command: zig build demo-web [-Doptimize=ReleaseSmall] --summary all
-    // ========================================================================
-    const web_step = b.step("demo-web", "Compile demos for web");
-
-    // Creating target for web
-    const web_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm32,
-        .os_tag = .emscripten,
-    });
-
-    const physics_mod_web = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = web_target,
-        .optimize = optimize,
-    });
-
-    // Render web
-    const render_web_mod = b.addModule("render", .{
-        .root_source_file = b.path("demos/render.zig"),
-        .target = web_target,
-        .optimize = optimize,
-    });
-    render_web_mod.addImport("physics-engine", physics_mod_web);
-
-    // Building Raylib again, but with web target
-    // The internal build.zig of Raylib will detect the .os_tag and will activate PLATFORM_WEB
-    const raylib_dep_web = b.dependency("raylib", .{
-        .target = web_target,
-        .optimize = optimize,
-    });
-
-    const raylib_lib_web = raylib_dep_web.artifact("raylib");
-
-    render_web_mod.linkLibrary(raylib_lib_web);
-    render_web_mod.link_libc = true;
-
-    // Link static library
-    const lib_web = b.addLibrary(.{
-        .name = "ballistic_web",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("demos/ballistic/ballistic.zig"),
-            .target = web_target,
-            .optimize = optimize,
-        }),
-        .linkage = .static,
-    });
-
-    lib_web.root_module.addImport("physics-engine", physics_mod_web);
-    lib_web.root_module.addImport("render", render_web_mod);
-
-    // This activates the donwload emsdk through raylib, calls emcc
-    // with raylib + lib and creates html, js and wasm
-    const emcc_flags = raylib.emsdk.emccDefaultFlags(b.allocator, .{
-        .optimize = optimize,
-        .asyncify = false,
-    });
-
-    const emcc_settings = raylib.emsdk.emccDefaultSettings(b.allocator, .{
-        .optimize = optimize,
-    });
-
-    const emcc_step = raylib.emsdk.emccStep(b, raylib_lib_web, lib_web, .{
-        .optimize = optimize,
-        .flags = emcc_flags,
-        .settings = emcc_settings,
-        .shell_file_path = b.path("demos/web/shell.html"),
-        .install_dir = .{ .custom = "web" },
-    });
-
-    web_step.dependOn(emcc_step);
+    const physics_perf_mod = addPhysicsMod(b, "physics-engine", perf_target, .ReleaseFast);
+    const perf_tests = b.addTest(.{ .root_module = physics_perf_mod });
+    if (perf_opt) {
+        perf_tests.use_llvm = true;
+        perf_tests.use_lld = true;
+    }
+    perf_step.dependOn(&b.addRunArtifact(perf_tests).step);
 }

@@ -1,8 +1,12 @@
 const std = @import("std");
 const cyclone = @import("physics-engine");
+const build_options = @import("build-options");
 const testing = std.testing;
 
-const FLOAT = f32;
+const FLOAT = switch (build_options.float) {
+    .f32 => f32,
+    .f64 => f64,
+};
 
 const Vec3 = cyclone.core.Vector3(FLOAT);
 const v3 = cyclone.core.vec3(FLOAT);
