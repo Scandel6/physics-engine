@@ -48,6 +48,33 @@ pub fn DragData(comptime T: type) type {
     };
 }
 
+/// Data struact for Spring Force Generators.
+pub fn SpringData(comptime T: type) type {
+    return struct {
+        particle_index: usize,
+        /// Particle at the other end of the spring.
+        other_particle_index: usize,
+        /// Spring constant.
+        k: T,
+        /// Spring rest length.
+        l: T,
+    };
+}
+
+/// Data struact for Anchored Spring Force Generators.
+pub fn AnchoredSpringData(comptime T: type) type {
+    return struct {
+        particle_index: usize,
+        anchor_position_x: T,
+        anchor_position_y: T,
+        anchor_position_z: T,
+        /// Spring constant.
+        k: T,
+        /// Spring rest length.
+        l: T,
+    };
+}
+
 fn applyGravity(
     comptime T: type,
     slices: ParticleSlices(T),
@@ -104,6 +131,93 @@ fn applyDrag(
     }
 }
 
+fn applySpring(
+    comptime T: type,
+    slices: ParticleSlices(T),
+    indices: []const usize,
+    other_particle_indices: []const usize,
+    ks: []const T,
+    ls: []const T,
+    len: usize,
+) void {
+    const v3 = core.vec3(T);
+    for (0..len) |i| {
+        const p_idx = indices[i];
+        const o_idx = other_particle_indices[i];
+
+        // Calculate the vector of the spring.
+        var force = v3.init(
+            slices.positions_x[p_idx],
+            slices.positions_y[p_idx],
+            slices.positions_z[p_idx],
+        );
+
+        force -= v3.init(
+            slices.positions_x[o_idx],
+            slices.positions_y[o_idx],
+            slices.positions_z[o_idx],
+        );
+
+        // Calculate the magnitude of the force.
+        var magnitude = v3.magnitude(force);
+
+        // Hooke's law: F = -k(d - l). The book (§6.2.1) uses real_abs here,
+        // which makes the spring always attract even when compressed.
+        // We drop abs for physical correctness, matching AnchoredSpring.
+        // Bungee will handle the "only pull when extended" case with an early return.
+        magnitude = (magnitude - ls[i]) * ks[i];
+
+        // Calculate final force.
+        var norm_force = v3.normalize(force);
+        norm_force = v3.mul(norm_force, -magnitude);
+
+        slices.force_accums_x[p_idx] += norm_force[0];
+        slices.force_accums_y[p_idx] += norm_force[1];
+        slices.force_accums_z[p_idx] += norm_force[2];
+    }
+}
+
+fn applyAnchoredSpring(
+    comptime T: type,
+    slices: ParticleSlices(T),
+    indices: []const usize,
+    anchor_position_x: []const T,
+    anchor_position_y: []const T,
+    anchor_position_z: []const T,
+    ks: []const T,
+    ls: []const T,
+    len: usize,
+) void {
+    const v3 = core.vec3(T);
+    for (0..len) |i| {
+        const p_idx = indices[i];
+        // Calculate the vector of the spring.
+        var force = v3.init(
+            slices.positions_x[p_idx],
+            slices.positions_y[p_idx],
+            slices.positions_z[p_idx],
+        );
+
+        force -= v3.init(
+            anchor_position_x[i],
+            anchor_position_y[i],
+            anchor_position_z[i],
+        );
+
+        // Calculate the magnitude of the force.
+        var magnitude = v3.magnitude(force);
+        magnitude = (magnitude - ls[i]) * ks[i];
+
+        // Calculate final force.
+        var norm_force = v3.normalize(force);
+        norm_force = v3.mul(norm_force, -magnitude);
+
+        slices.force_accums_x[p_idx] += norm_force[0];
+        slices.force_accums_y[p_idx] += norm_force[1];
+        slices.force_accums_z[p_idx] += norm_force[2];
+    }
+}
+
 /// Holds all the force generators and the particles they apply to.
 pub fn ParticleForceRegistry(comptime T: type) type {
     const Vec3 = core.Vector3(T);
@@ -111,12 +225,16 @@ pub fn ParticleForceRegistry(comptime T: type) type {
     return struct {
         gravity: std.MultiArrayList(GravityData(T)),
         drag: std.MultiArrayList(DragData(T)),
+        spring: std.MultiArrayList(SpringData(T)),
+        anchored_spring: std.MultiArrayList(AnchoredSpringData(T)),
         allocator: mem.Allocator,
 
         pub fn init(alloc: mem.Allocator) @This() {
             return .{
                 .gravity = .{},
                 .drag = .{},
+                .spring = .{},
+                .anchored_spring = .{},
                 .allocator = alloc,
             };
         }
@@ -124,6 +242,8 @@ pub fn ParticleForceRegistry(comptime T: type) type {
         pub fn deinit(self: *@This()) void {
             self.gravity.deinit(self.allocator);
             self.drag.deinit(self.allocator);
+            self.spring.deinit(self.allocator);
+            self.anchored_spring.deinit(self.allocator);
         }
 
         test "init/deinit" {
@@ -139,9 +259,39 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             try self.drag.append(self.allocator, .{ .particle_index = p_idx, .k1 = k1, .k2 = k2 });
         }
 
+        pub fn addSpring(self: *@This(), p_idx: usize, o_idx: usize, k: T, l: T) mem.Allocator.Error!void {
+            try self.spring.append(self.allocator, .{
+                .particle_index = p_idx,
+                .other_particle_index = o_idx,
+                .k = k,
+                .l = l,
+            });
+        }
+
+        pub fn addAnchoredSpring(
+            self: *@This(),
+            p_idx: usize,
+            anchor_x: T,
+            anchor_y: T,
+            anchor_z: T,
+            k: T,
+            l: T,
+        ) mem.Allocator.Error!void {
+            try self.anchored_spring.append(self.allocator, .{
+                .particle_index = p_idx,
+                .anchor_position_x = anchor_x,
+                .anchor_position_y = anchor_y,
+                .anchor_position_z = anchor_z,
+                .k = k,
+                .l = l,
+            });
+        }
+
         pub fn ensureTotalCapacity(self: *@This(), new_cap: usize) mem.Allocator.Error!void {
             try self.gravity.ensureTotalCapacity(self.allocator, new_cap);
             try self.drag.ensureTotalCapacity(self.allocator, new_cap);
+            try self.spring.ensureTotalCapacity(self.allocator, new_cap);
+            try self.anchored_spring.ensureTotalCapacity(self.allocator, new_cap);
         }
 
         test "gravity - applies force scaled by mass, skips infinite mass" {
@@ -218,6 +368,178 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             try testing.expect(v3.eq(system.forceAccum(0), v3.init(-2, -10, 0)));
         }
 
+        test "spring - stretched pulls toward other particle" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(3, 0, 0)); // p0 at (3,0,0)
+            try system.addParticle(p);
+            p.setPosition(v3.init(0, 0, 0)); // p1 at origin
+            try system.addParticle(p);
+
+            try registry.addSpring(0, 1, 1, 1); // k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=3, l=1, F = -(3-1)*1 = -2 in x → (-2,0,0) toward p1
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(-2, 0, 0)));
+        }
+
+        test "spring - compressed pushes away from other particle" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(0.5, 0, 0)); // p0 at (0.5,0,0)
+            try system.addParticle(p);
+            p.setPosition(v3.init(0, 0, 0)); // p1 at origin
+            try system.addParticle(p);
+
+            try registry.addSpring(0, 1, 1, 1); // k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=0.5, l=1, F = -(0.5-1)*1 = +0.5 in x → (0.5,0,0) away from p1
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(0.5, 0, 0)));
+        }
+
+        test "spring - at rest length applies no force" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(1, 0, 0)); // p0 at (1,0,0)
+            try system.addParticle(p);
+            p.setPosition(v3.init(0, 0, 0)); // p1 at origin
+            try system.addParticle(p);
+
+            try registry.addSpring(0, 1, 1, 1); // k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=1=l → F=0
+            try testing.expect(v3.eq(system.forceAccum(0), v3.zero()));
+        }
+
+        test "spring - only affects registered particle, not the other" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(3, 0, 0));
+            try system.addParticle(p);
+            p.setPosition(v3.init(0, 0, 0));
+            try system.addParticle(p);
+
+            try registry.addSpring(0, 1, 1, 1); // only p0 registered
+
+            registry.updateForces(&system, 1.0);
+
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(-2, 0, 0)));
+            try testing.expect(v3.eq(system.forceAccum(1), v3.zero()));
+        }
+
+        test "spring - non-axis-aligned direction with scaled k and l" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(3, 4, 0)); // p0 at (3,4,0), d=5
+            try system.addParticle(p);
+            p.setPosition(v3.init(0, 0, 0)); // p1 at origin
+            try system.addParticle(p);
+
+            try registry.addSpring(0, 1, 10, 2); // k=10, l=2
+
+            registry.updateForces(&system, 1.0);
+
+            // d=5, l=2, F = -(5-2)*10 = -30
+            // unit = (3/5, 4/5, 0) = (0.6, 0.8, 0)
+            // F = (0.6, 0.8, 0) * -30 = (-18, -24, 0)
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(-18, -24, 0)));
+        }
+
+        test "anchored spring - stretched pulls toward anchor" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(3, 0, 0));
+            try system.addParticle(p);
+
+            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=3, l=1, F = -(3-1)*1 = -2 in x → (-2,0,0) toward anchor
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(-2, 0, 0)));
+        }
+
+        test "anchored spring - compressed pushes away from anchor" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(0.5, 0, 0));
+            try system.addParticle(p);
+
+            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=0.5, l=1, F = -(0.5-1)*1 = +0.5 in x → (0.5,0,0) away from anchor
+            try testing.expect(v3.eq(system.forceAccum(0), v3.init(0.5, 0, 0)));
+        }
+
+        test "anchored spring - at rest length applies no force" {
+            const v3 = core.vec3(T);
+            var system = particle.ParticleSystem(T).init(testing.allocator);
+            defer system.deinit();
+            var registry = ParticleForceRegistry(T).init(testing.allocator);
+            defer registry.deinit();
+
+            var p = particle.defaultParticle(T);
+            p.inverse_mass = 1;
+            p.setPosition(v3.init(1, 0, 0));
+            try system.addParticle(p);
+
+            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+
+            registry.updateForces(&system, 1.0);
+
+            // d=1=l → F=0
+            try testing.expect(v3.eq(system.forceAccum(0), v3.zero()));
+        }
+
         /// Calls all the force generators to update the forces of
         /// their corresponding particles.
         pub fn updateForces(self: *@This(), system: *particle.ParticleSystem(T), duration: T) void {
@@ -263,6 +585,30 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 drag_slice.items(.k1),
                 drag_slice.items(.k2),
                 drag_slice.len,
+            );
+
+            const spring_slice = self.spring.slice();
+            applySpring(
+                T,
+                slices,
+                spring_slice.items(.particle_index),
+                spring_slice.items(.other_particle_index),
+                spring_slice.items(.k),
+                spring_slice.items(.l),
+                spring_slice.len,
+            );
+
+            const anchor_spring_slice = self.anchored_spring.slice();
+            applyAnchoredSpring(
+                T,
+                slices,
+                anchor_spring_slice.items(.particle_index),
+                anchor_spring_slice.items(.anchor_position_x),
+                anchor_spring_slice.items(.anchor_position_y),
+                anchor_spring_slice.items(.anchor_position_z),
+                anchor_spring_slice.items(.k),
+                anchor_spring_slice.items(.l),
+                anchor_spring_slice.len,
             );
         }
     };
