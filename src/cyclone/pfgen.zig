@@ -65,9 +65,7 @@ pub fn SpringData(comptime T: type) type {
 pub fn AnchoredSpringData(comptime T: type) type {
     return struct {
         particle_index: usize,
-        anchor_position_x: T,
-        anchor_position_y: T,
-        anchor_position_z: T,
+        anchor_position: core.Vector3(T),
         /// Spring constant.
         k: T,
         /// Spring rest length.
@@ -181,9 +179,7 @@ fn applyAnchoredSpring(
     comptime T: type,
     slices: ParticleSlices(T),
     indices: []const usize,
-    anchor_position_x: []const T,
-    anchor_position_y: []const T,
-    anchor_position_z: []const T,
+    anchor_positions: []const core.Vector3(T),
     ks: []const T,
     ls: []const T,
     len: usize,
@@ -198,11 +194,7 @@ fn applyAnchoredSpring(
             slices.positions_z[p_idx],
         );
 
-        force -= v3.init(
-            anchor_position_x[i],
-            anchor_position_y[i],
-            anchor_position_z[i],
-        );
+        force -= anchor_positions[i];
 
         // Calculate the magnitude of the force.
         var magnitude = v3.magnitude(force);
@@ -271,17 +263,13 @@ pub fn ParticleForceRegistry(comptime T: type) type {
         pub fn addAnchoredSpring(
             self: *@This(),
             p_idx: usize,
-            anchor_x: T,
-            anchor_y: T,
-            anchor_z: T,
+            anchor: Vec3,
             k: T,
             l: T,
         ) mem.Allocator.Error!void {
             try self.anchored_spring.append(self.allocator, .{
                 .particle_index = p_idx,
-                .anchor_position_x = anchor_x,
-                .anchor_position_y = anchor_y,
-                .anchor_position_z = anchor_z,
+                .anchor_position = anchor,
                 .k = k,
                 .l = l,
             });
@@ -492,7 +480,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             p.setPosition(v3.init(3, 0, 0));
             try system.addParticle(p);
 
-            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+            try registry.addAnchoredSpring(0, v3.init(0, 0, 0), 1, 1); // anchor at origin, k=1, l=1
 
             registry.updateForces(&system, 1.0);
 
@@ -512,7 +500,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             p.setPosition(v3.init(0.5, 0, 0));
             try system.addParticle(p);
 
-            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+            try registry.addAnchoredSpring(0, v3.init(0, 0, 0), 1, 1); // anchor at origin, k=1, l=1
 
             registry.updateForces(&system, 1.0);
 
@@ -532,7 +520,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             p.setPosition(v3.init(1, 0, 0));
             try system.addParticle(p);
 
-            try registry.addAnchoredSpring(0, 0, 0, 0, 1, 1); // anchor at origin, k=1, l=1
+            try registry.addAnchoredSpring(0, v3.init(0, 0, 0), 1, 1); // anchor at origin, k=1, l=1
 
             registry.updateForces(&system, 1.0);
 
@@ -603,9 +591,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 T,
                 slices,
                 anchor_spring_slice.items(.particle_index),
-                anchor_spring_slice.items(.anchor_position_x),
-                anchor_spring_slice.items(.anchor_position_y),
-                anchor_spring_slice.items(.anchor_position_z),
+                anchor_spring_slice.items(.anchor_position),
                 anchor_spring_slice.items(.k),
                 anchor_spring_slice.items(.l),
                 anchor_spring_slice.len,
