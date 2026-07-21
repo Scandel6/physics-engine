@@ -73,6 +73,15 @@ pub fn AnchoredSpringData(comptime T: type) type {
     };
 }
 
+pub fn BungeeData(comptime T: type) type {
+    return struct {
+        particle_index: usize,
+        other_particle_index: usize,
+        k: T,
+        l: T,
+    };
+}
+
 fn applyGravity(
     comptime T: type,
     slices: ParticleSlices(T),
@@ -210,6 +219,51 @@ fn applyAnchoredSpring(
     }
 }
 
+fn applyBungee(
+    comptime T: type,
+    slices: ParticleSlices(T),
+    indices: []const usize,
+    other_particle_indices: []const usize,
+    ks: []const T,
+    ls: []const T,
+    len: usize,
+) void {
+    const v3 = core.vec3(T);
+    for (0..len) |i| {
+        const p_idx = indices[i];
+        const o_idx = other_particle_indices[i];
+
+        // Calculate the vector of the spring.
+        var force = v3.init(
+            slices.positions_x[p_idx],
+            slices.positions_y[p_idx],
+            slices.positions_z[p_idx],
+        );
+
+        force -= v3.init(
+            slices.positions_x[o_idx],
+            slices.positions_y[o_idx],
+            slices.positions_z[o_idx],
+        );
+
+        var magnitude = v3.magnitude(force);
+
+        if (magnitude < ls[i]) return;
+
+        // Calculate the magnitude of the force.
+        // Original code has inverse sign (bug)
+        magnitude = (magnitude - ls[i]) * ks[i];
+
+        // Calculate final force.
+        var norm_force = v3.normalize(force);
+        norm_force = v3.mul(norm_force, -magnitude);
+
+        slices.force_accums_x[p_idx] += norm_force[0];
+        slices.force_accums_y[p_idx] += norm_force[1];
+        slices.force_accums_z[p_idx] += norm_force[2];
+    }
+}
+
 /// Holds all the force generators and the particles they apply to.
 pub fn ParticleForceRegistry(comptime T: type) type {
     const Vec3 = core.Vector3(T);
@@ -219,6 +273,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
         drag: std.MultiArrayList(DragData(T)),
         spring: std.MultiArrayList(SpringData(T)),
         anchored_spring: std.MultiArrayList(AnchoredSpringData(T)),
+        bungee: std.MultiArrayList(BungeeData(T)),
         allocator: mem.Allocator,
 
         pub fn init(alloc: mem.Allocator) @This() {
@@ -227,6 +282,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 .drag = .{},
                 .spring = .{},
                 .anchored_spring = .{},
+                .bungee = .{},
                 .allocator = alloc,
             };
         }
@@ -236,6 +292,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             self.drag.deinit(self.allocator);
             self.spring.deinit(self.allocator);
             self.anchored_spring.deinit(self.allocator);
+            self.bungee.deinit(self.allocator);
         }
 
         test "init/deinit" {
@@ -275,11 +332,21 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             });
         }
 
+        pub fn addBungee(self: *@This(), p_idx: usize, o_idx: usize, k: T, l: T) mem.Allocator.Error!void {
+            try self.bungee.append(self.allocator, .{
+                .particle_index = p_idx,
+                .other_particle_index = o_idx,
+                .k = k,
+                .l = l,
+            });
+        }
+
         pub fn ensureTotalCapacity(self: *@This(), new_cap: usize) mem.Allocator.Error!void {
             try self.gravity.ensureTotalCapacity(self.allocator, new_cap);
             try self.drag.ensureTotalCapacity(self.allocator, new_cap);
             try self.spring.ensureTotalCapacity(self.allocator, new_cap);
             try self.anchored_spring.ensureTotalCapacity(self.allocator, new_cap);
+            try self.bungee.ensureTotalCapacity(self.allocator, new_cap);
         }
 
         test "gravity - applies force scaled by mass, skips infinite mass" {
@@ -595,6 +662,17 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 anchor_spring_slice.items(.k),
                 anchor_spring_slice.items(.l),
                 anchor_spring_slice.len,
+            );
+
+            const bungee_slice = self.bungee.slice();
+            applyBungee(
+                T,
+                slices,
+                bungee_slice.items(.particle_index),
+                bungee_slice.items(.other_particle_index),
+                bungee_slice.items(.k),
+                bungee_slice.items(.l),
+                bungee_slice.len,
             );
         }
     };
