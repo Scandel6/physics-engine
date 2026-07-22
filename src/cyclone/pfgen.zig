@@ -37,7 +37,7 @@ pub fn GravityData(comptime T: type) type {
     };
 }
 
-/// Data struact for Drag Force Generators.
+/// Data struct for Drag Force Generators.
 pub fn DragData(comptime T: type) type {
     return struct {
         particle_index: usize,
@@ -48,7 +48,7 @@ pub fn DragData(comptime T: type) type {
     };
 }
 
-/// Data struact for Spring Force Generators.
+/// Data struct for Spring Force Generators.
 pub fn SpringData(comptime T: type) type {
     return struct {
         particle_index: usize,
@@ -61,7 +61,7 @@ pub fn SpringData(comptime T: type) type {
     };
 }
 
-/// Data struact for Anchored Spring Force Generators.
+/// Data struct for Anchored Spring Force Generators.
 pub fn AnchoredSpringData(comptime T: type) type {
     return struct {
         particle_index: usize,
@@ -73,12 +73,31 @@ pub fn AnchoredSpringData(comptime T: type) type {
     };
 }
 
+/// Data struct for Bungee Force Generators.
 pub fn BungeeData(comptime T: type) type {
     return struct {
         particle_index: usize,
         other_particle_index: usize,
         k: T,
         l: T,
+    };
+}
+
+/// Data struct for Buoyancy Force Generators.
+pub fn BuoyancyData(comptime T: type) type {
+    return struct {
+        particle_index: usize,
+        /// Maximum submersion depth of the object before
+        /// it generates its maximum buoyancy force.
+        max_depth: T,
+        /// The volume of the object.
+        volume: T,
+        /// The height of the water plane above y = 0. The plane
+        /// will be parallel to the XZ plane.
+        height: T,
+        /// The density of the liquid. Pure water has a density
+        /// of 1000 kg per cubic meter.
+        density: T,
     };
 }
 
@@ -264,6 +283,40 @@ fn applyBungee(
     }
 }
 
+fn applyBuoyancy(
+    comptime T: type,
+    slices: ParticleSlices(T),
+    indices: []const usize,
+    max_depths: []const T,
+    volumes: []const T,
+    heights: []const T,
+    densities: []const T,
+    len: usize,
+) void {
+    const v3 = core.vec3(T);
+    for (0..len) |i| {
+        const p_idx = indices[i];
+
+        const depth = slices.positions_y[p_idx];
+
+        // Check if we are out of the water.
+        if (depth >= heights[i] + max_depths[i]) return;
+
+        var force = v3.zero();
+
+        // Check if we are completely submerged.
+        if (depth <= heights[i] - max_depths[i]) {
+            force[1] = densities[i] * volumes[i];
+            slices.force_accums_y[p_idx] += force[1];
+            return;
+        }
+
+        // We are partialy submerged.
+        force[1] = densities[i] * volumes[i] * (depth - max_depths[i] - heights[i]) / 2 * max_depths[i];
+        slices.force_accums_y[p_idx] += force[1];
+    }
+}
+
 /// Holds all the force generators and the particles they apply to.
 pub fn ParticleForceRegistry(comptime T: type) type {
     const Vec3 = core.Vector3(T);
@@ -274,6 +327,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
         spring: std.MultiArrayList(SpringData(T)),
         anchored_spring: std.MultiArrayList(AnchoredSpringData(T)),
         bungee: std.MultiArrayList(BungeeData(T)),
+        buoyancy: std.MultiArrayList(BuoyancyData(T)),
         allocator: mem.Allocator,
 
         pub fn init(alloc: mem.Allocator) @This() {
@@ -283,6 +337,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 .spring = .{},
                 .anchored_spring = .{},
                 .bungee = .{},
+                .buoyancy = .{},
                 .allocator = alloc,
             };
         }
@@ -293,6 +348,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             self.spring.deinit(self.allocator);
             self.anchored_spring.deinit(self.allocator);
             self.bungee.deinit(self.allocator);
+            self.buoyancy.deinit(self.allocator);
         }
 
         test "init/deinit" {
@@ -338,6 +394,23 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 .other_particle_index = o_idx,
                 .k = k,
                 .l = l,
+            });
+        }
+
+        pub fn addBuoyancy(
+            self: *@This(),
+            p_idx: usize,
+            max_depth: T,
+            volume: T,
+            height: T,
+            density: T,
+        ) mem.Allocator.Error!void {
+            try self.buoyancy.append(self.allocator, .{
+                .particle_index = p_idx,
+                .max_depth = max_depth,
+                .volume = volume,
+                .height = height,
+                .density = density,
             });
         }
 
@@ -673,6 +746,18 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 bungee_slice.items(.k),
                 bungee_slice.items(.l),
                 bungee_slice.len,
+            );
+
+            const buoyancy_slice = self.buoyancy.slice();
+            applyBuoyancy(
+                T,
+                slices,
+                buoyancy_slice.items(.particle_index),
+                buoyancy_slice.items(.max_depth),
+                buoyancy_slice.items(.volume),
+                buoyancy_slice.items(.height),
+                buoyancy_slice.items(.density),
+                buoyancy_slice.len,
             );
         }
     };
