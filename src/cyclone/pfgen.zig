@@ -101,6 +101,19 @@ pub fn BuoyancyData(comptime T: type) type {
     };
 }
 
+/// Data struct for Fake Spring Force Generators.
+pub fn FakeSpringData(comptime T: type) type {
+    return struct {
+        particle_index: usize,
+        /// The location of the anchored end of the spring.
+        anchor_position: core.Vector3(T),
+        /// Holds the spring constant.
+        k: T,
+        /// Holds the damping on the oscillation of the spring.
+        damping: T,
+    };
+}
+
 fn applyGravity(
     comptime T: type,
     slices: ParticleSlices(T),
@@ -300,7 +313,7 @@ fn applyBuoyancy(
         const depth = slices.positions_y[p_idx];
 
         // Check if we are out of the water.
-        if (depth >= heights[i] + max_depths[i]) return;
+        if (depth >= heights[i] + max_depths[i]) continue;
 
         var force = v3.zero();
 
@@ -308,12 +321,72 @@ fn applyBuoyancy(
         if (depth <= heights[i] - max_depths[i]) {
             force[1] = densities[i] * volumes[i];
             slices.force_accums_y[p_idx] += force[1];
-            return;
+            continue;
         }
 
         // We are partialy submerged.
-        force[1] = densities[i] * volumes[i] * (depth - max_depths[i] - heights[i]) / 2 * max_depths[i];
+        force[1] = densities[i] * volumes[i] * (depth - max_depths[i] - heights[i]) / (2 * max_depths[i]);
         slices.force_accums_y[p_idx] += force[1];
+    }
+}
+
+/// Fake spring is difficult to implement correctly.
+/// Especially if in future changes the engine will use
+/// time divided as in Jolt.
+///
+/// Now equations are implemented from
+/// $p'' = -k\,p - d\,p'$
+///
+/// See 6.3.2 FAKING STIFF SPRINGS in book.
+fn applyFakeSpring(
+    comptime T: type,
+    slices: ParticleSlices(T),
+    indices: []const usize,
+    anchor_positions: []const core.Vector3(T),
+    ks: []const T,
+    dampings: []const T,
+    duration: T,
+    len: usize,
+) void {
+    const v3 = core.vec3(T);
+    for (0..len) |i| {
+        const p_idx = indices[i];
+
+        if (slices.inverse_masses[p_idx] == 0) continue;
+
+        const vel = v3.init(
+            slices.velocities_x[p_idx],
+            slices.velocities_y[p_idx],
+            slices.velocities_z[p_idx],
+        );
+        // Calculate the relative position of the particle to the anchor
+        var position = v3.init(
+            slices.positions_x[p_idx],
+            slices.positions_y[p_idx],
+            slices.positions_z[p_idx],
+        );
+        position -= anchor_positions[i];
+
+        // Calculate the constants and check whether they are in bounds.
+        const gamma = 0.5 * @sqrt(4 * ks[i] - dampings[i] * dampings[i]);
+        if (gamma == 0) continue;
+
+        var c = v3.mul(position, dampings[i] / (2 * gamma));
+        c += v3.mul(vel, 1 / gamma);
+
+        // Calculate the target position.
+        var target = v3.mul(position, @cos(gamma * duration));
+        target += v3.mul(c, @sin(gamma * duration));
+        target *= @exp(-0.5 * duration * dampings[i]);
+
+        // Calculate the resulting acceleration and force.
+        var acc = (target - position) / (duration * duration);
+        acc -= v3.mul(vel, 1 / duration);
+        const force = v3.mul(acc, 1 / slices.inverse_masses[p_idx]);
+
+        slices.force_accums_x[p_idx] += force[0];
+        slices.force_accums_y[p_idx] += force[1];
+        slices.force_accums_z[p_idx] += force[2];
     }
 }
 
@@ -328,6 +401,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
         anchored_spring: std.MultiArrayList(AnchoredSpringData(T)),
         bungee: std.MultiArrayList(BungeeData(T)),
         buoyancy: std.MultiArrayList(BuoyancyData(T)),
+        fake_spring: std.MultiArrayList(FakeSpringData(T)),
         allocator: mem.Allocator,
 
         pub fn init(alloc: mem.Allocator) @This() {
@@ -338,6 +412,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 .anchored_spring = .{},
                 .bungee = .{},
                 .buoyancy = .{},
+                .fake_spring = .{},
                 .allocator = alloc,
             };
         }
@@ -349,6 +424,7 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             self.anchored_spring.deinit(self.allocator);
             self.bungee.deinit(self.allocator);
             self.buoyancy.deinit(self.allocator);
+            self.fake_spring.deinit(self.allocator);
         }
 
         test "init/deinit" {
@@ -414,12 +490,29 @@ pub fn ParticleForceRegistry(comptime T: type) type {
             });
         }
 
+        pub fn addFakeSpring(
+            self: *@This(),
+            p_idx: usize,
+            anchor: Vec3,
+            k: T,
+            damping: T,
+        ) mem.Allocator.Error!void {
+            try self.fake_spring.append(self.allocator, .{
+                .particle_index = p_idx,
+                .anchor_position = anchor,
+                .k = k,
+                .damping = damping,
+            });
+        }
+
         pub fn ensureTotalCapacity(self: *@This(), new_cap: usize) mem.Allocator.Error!void {
             try self.gravity.ensureTotalCapacity(self.allocator, new_cap);
             try self.drag.ensureTotalCapacity(self.allocator, new_cap);
             try self.spring.ensureTotalCapacity(self.allocator, new_cap);
             try self.anchored_spring.ensureTotalCapacity(self.allocator, new_cap);
             try self.bungee.ensureTotalCapacity(self.allocator, new_cap);
+            try self.buoyancy.ensureTotalCapacity(self.allocator, new_cap);
+            try self.fake_spring.ensureTotalCapacity(self.allocator, new_cap);
         }
 
         test "gravity - applies force scaled by mass, skips infinite mass" {
@@ -693,9 +786,6 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 .dampings = slice.items(.damping),
             };
 
-            // Not used for now
-            _ = duration;
-
             const gravity_slice = self.gravity.slice();
             applyGravity(
                 T,
@@ -758,6 +848,18 @@ pub fn ParticleForceRegistry(comptime T: type) type {
                 buoyancy_slice.items(.height),
                 buoyancy_slice.items(.density),
                 buoyancy_slice.len,
+            );
+
+            const fake_spring_slice = self.fake_spring.slice();
+            applyFakeSpring(
+                T,
+                slices,
+                fake_spring_slice.items(.particle_index),
+                fake_spring_slice.items(.anchor_position),
+                fake_spring_slice.items(.k),
+                fake_spring_slice.items(.damping),
+                duration,
+                fake_spring_slice.len,
             );
         }
     };
